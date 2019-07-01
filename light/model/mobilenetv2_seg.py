@@ -57,6 +57,7 @@ def get_mobilenet_v2_seg(dataset='citys', pretrained=False, root='~/.torch/model
         'ade20k': 'ade',
         'coco': 'coco',
         'citys': 'citys',
+        'segdata': 'segdata',
     }
     from light.data import datasets
     model = MobileNetV2Seg(datasets[dataset].NUM_CLASS, backbone='mobilenetv2',

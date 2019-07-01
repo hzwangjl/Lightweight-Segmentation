@@ -23,6 +23,7 @@ from light.data import get_segmentation_dataset
 from light.model import get_segmentation_model
 from light.nn import MixSoftmaxCrossEntropyLoss, MixSoftmaxCrossEntropyOHEMLoss
 
+from light.data.segdata import SegmentationData
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Light Model for Segmentation')
@@ -89,38 +90,68 @@ def parse_args():
 
     return args
 
-
 class Trainer(object):
     def __init__(self, args):
         self.args = args
         self.device = torch.device(args.device)
+        self.nb_classes = 3
+
+        train_img_dir = '/home/wangjialei/teeth_dataset/new_data_20190621/train_new/images'
+        train_mask_dir = '/home/wangjialei/teeth_dataset/new_data_20190621/train_new/masks'
 
         # image transform
-        input_transform = transforms.Compose([
+        train_transform=transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize([.485, .456, .406], [.229, .224, .225]),
+            transforms.Normalize([0.519401, 0.359217, 0.310136], [0.061113, 0.048637, 0.041166]),#R_var is 0.061113, G_var is 0.048637, B_var is 0.041166
         ])
         # dataset and dataloader
-        data_kwargs = {'transform': input_transform, 'base_size': args.base_size, 'crop_size': args.crop_size}
-        trainset = get_segmentation_dataset(args.dataset, split='train', mode='train', **data_kwargs)
-        args.iters_per_epoch = len(trainset) // (args.num_gpus * args.batch_size)
+        data_kwargs = {'transform': train_transform, 'base_size': args.base_size, 'crop_size': args.crop_size}
+        # train_set = get_segmentation_dataset(args.dataset, train_img_dir, train_mask_dir, self.nb_classes, 'train', **data_kwargs)
+        train_set = SegmentationData(images_dir=train_img_dir, masks_dir=train_mask_dir, nb_classes=self.nb_classes, mode='train', transform=train_transform)
+
+        args.iters_per_epoch = len(train_set) // (args.num_gpus * args.batch_size)
         args.max_iters = args.epochs * args.iters_per_epoch
 
-        train_sampler = make_data_sampler(trainset, shuffle=True, distributed=args.distributed)
+        train_sampler = make_data_sampler(train_set, shuffle=True, distributed=args.distributed)
         train_batch_sampler = make_batch_data_sampler(train_sampler, args.batch_size, args.max_iters)
-        self.train_loader = data.DataLoader(dataset=trainset,
+        # self.train_loader = data.DataLoader(dataset=trainset,
+        #                                     batch_sampler=train_batch_sampler,
+        #                                     num_workers=args.workers,
+        #                                     pin_memory=True)
+        self.train_loader = data.DataLoader(dataset=train_set,
                                             batch_sampler=train_batch_sampler,
+                                            #batch_size = args.batch_size,
                                             num_workers=args.workers,
+                                            # shuffle = True,
                                             pin_memory=True)
 
         if not args.skip_val:
-            valset = get_segmentation_dataset(args.dataset, split='val', mode='val', **data_kwargs)
-            val_sampler = make_data_sampler(valset, False, args.distributed)
-            val_batch_sampler = make_batch_data_sampler(val_sampler, args.batch_size)
-            self.val_loader = data.DataLoader(dataset=valset,
-                                              batch_sampler=val_batch_sampler,
-                                              num_workers=args.workers,
-                                              pin_memory=True)
+            # valset = get_segmentation_dataset(args.dataset, split='val', mode='val', **data_kwargs)
+            # valset = get_segmentation_dataset(args.dataset,
+            #     images_dir='/home/wangjialei/teeth_dataset/new_data_20190621/valid_new/images',
+            #     masks_dir='/home/wangjialei/teeth_dataset/new_data_20190621/valid_new/masks',
+            #     nb_classes=3, mode='val', **data_kwargs)
+            valid_img_dir = '/home/wangjialei/teeth_dataset/new_data_20190621/valid_new/images'
+            valid_mask_dir = '/home/wangjialei/teeth_dataset/new_data_20190621/valid_new/masks'
+            valid_transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize([0.517446, 0.360147, 0.310427], [0.061526,0.049087, 0.041330])#R_var is 0.061526, G_var is 0.049087, B_var is 0.041330
+            ])
+            data_kwargs = {'transform': valid_transform, 'base_size': args.base_size, 'crop_size': args.crop_size}
+            # valid_set = get_segmentation_dataset(args.dataset, valid_img_dir, valid_mask_dir, self.nb_classes, 'valid', **data_kwargs)
+            valid_set = SegmentationData(images_dir=valid_img_dir, masks_dir=valid_mask_dir, nb_classes=self.nb_classes, mode='valid', transform=valid_transform)
+            valid_sampler = make_data_sampler(valid_set, False, args.distributed)
+            valid_batch_sampler = make_batch_data_sampler(valid_sampler, args.batch_size)
+            # self.val_loader = data.DataLoader(dataset=valset,
+            #                                   batch_sampler=val_batch_sampler,
+            #                                   num_workers=args.workers,
+            #                                   pin_memory=True)
+            self.valid_loader = data.DataLoader(dataset=valid_set,
+                                                batch_sampler=valid_batch_sampler,
+                                                # batch_size = args.batch_size,
+                                                num_workers=args.workers,
+                                                # shuffle = False,
+                                                pin_memory=True)
 
         # create network
         BatchNorm2d = nn.SyncBatchNorm if args.distributed else nn.BatchNorm2d
@@ -163,7 +194,7 @@ class Trainer(object):
                                                              find_unused_parameters=True)
 
         # evaluation metrics
-        self.metric = SegmentationMetric(trainset.num_class)
+        self.metric = SegmentationMetric(train_set.num_class)
 
         self.best_pred = 0.0
 
@@ -229,7 +260,7 @@ class Trainer(object):
             model = self.model
         torch.cuda.empty_cache()  # TODO check if it helps
         model.eval()
-        for i, (image, target) in enumerate(self.val_loader):
+        for i, (image, target) in enumerate(self.valid_loader):
             image = image.to(self.device)
             target = target.to(self.device)
 
